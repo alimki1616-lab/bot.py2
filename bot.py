@@ -32,6 +32,7 @@ class TonPriceBot:
         self.channel = channel
         self.session = None
         self.last_price = None
+        self.last_sent_minute = None
 
     async def get_ton_price(self):
         """دریافت قیمت Toncoin با retry و دقت بالا"""
@@ -119,6 +120,14 @@ class TonPriceBot:
     async def send_price_update(self):
         """ارسال قیمت به کانال"""
         try:
+            # بررسی که در این دقیقه قبلاً ارسال نشده باشد
+            now = datetime.now(timezone.utc)
+            current_minute = (now.year, now.month, now.day, now.hour, now.minute)
+            
+            if self.last_sent_minute == current_minute:
+                logger.info("⏭️ در این دقیقه قبلاً ارسال شده، رد می‌شود")
+                return False
+            
             price = await self.get_ton_price()
             
             if price is None:
@@ -133,6 +142,9 @@ class TonPriceBot:
                 text=message,
                 parse_mode=ParseMode.HTML
             )
+            
+            # ذخیره دقیقه ارسال
+            self.last_sent_minute = current_minute
             
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
             logger.info(f"✅ قیمت ارسال شد: {message} - {current_time}")
@@ -152,6 +164,9 @@ class TonPriceBot:
         
         logger.info(f"⏳ صبر {seconds_until_next_minute:.1f} ثانیه...")
         await asyncio.sleep(seconds_until_next_minute)
+        
+        # صبر 1 ثانیه اضافی برای اطمینان از شروع دقیقه جدید
+        await asyncio.sleep(1)
 
     async def run(self):
         """اجرای ربات"""
