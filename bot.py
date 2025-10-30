@@ -32,7 +32,6 @@ class TonPriceBot:
         self.channel = channel
         self.session = None
         self.last_price = None
-        self.last_sent_minute = None
 
     async def get_ton_price(self):
         """دریافت قیمت Toncoin با retry و دقت بالا"""
@@ -49,11 +48,11 @@ class TonPriceBot:
                             data = await response.json()
                             if data.get('code') == '200000' and 'data' in data:
                                 price = Decimal(str(data['data']['price']))
-                                logger.info(f"✅ قیمت از KuCoin: ${price} (دقت: {len(str(price).split('.')[1])} رقم)")
+                                logger.info(f"✅ قیمت از KuCoin: ${price}")
                                 self.last_price = price
                                 return price
                 except Exception as e:
-                    logger.warning(f"KuCoin خطا (تلاش {attempt + 1}): {e}")
+                    logger.warning(f"KuCoin خطا: {e}")
                 
                 # اولویت 2: OKX (3 رقم اعشار)
                 try:
@@ -62,11 +61,11 @@ class TonPriceBot:
                             data = await response.json()
                             if data.get('code') == '0' and 'data' in data:
                                 price = Decimal(str(data['data'][0]['last']))
-                                logger.info(f"✅ قیمت از OKX: ${price} (دقت: {len(str(price).split('.')[1])} رقم)")
+                                logger.info(f"✅ قیمت از OKX: ${price}")
                                 self.last_price = price
                                 return price
                 except Exception as e:
-                    logger.warning(f"OKX خطا (تلاش {attempt + 1}): {e}")
+                    logger.warning(f"OKX خطا: {e}")
                 
                 # اولویت 3: Binance (پشتیبان)
                 try:
@@ -74,11 +73,11 @@ class TonPriceBot:
                         if response.status == 200:
                             data = await response.json()
                             price = Decimal(str(data['price']))
-                            logger.info(f"✅ قیمت از Binance: ${price} (دقت: {len(str(price).split('.')[1]) if '.' in str(price) else 0} رقم)")
+                            logger.info(f"✅ قیمت از Binance: ${price}")
                             self.last_price = price
                             return price
                 except Exception as e:
-                    logger.warning(f"Binance خطا (تلاش {attempt + 1}): {e}")
+                    logger.warning(f"Binance خطا: {e}")
                 
                 # اولویت 4: CoinGecko (پشتیبان)
                 try:
@@ -86,13 +85,12 @@ class TonPriceBot:
                         if response.status == 200:
                             data = await response.json()
                             price = Decimal(str(data['the-open-network']['usd']))
-                            logger.info(f"✅ قیمت از CoinGecko: ${price} (دقت: {len(str(price).split('.')[1]) if '.' in str(price) else 0} رقم)")
+                            logger.info(f"✅ قیمت از CoinGecko: ${price}")
                             self.last_price = price
                             return price
                 except Exception as e:
-                    logger.warning(f"CoinGecko خطا (تلاش {attempt + 1}): {e}")
+                    logger.warning(f"CoinGecko خطا: {e}")
                 
-                # صبر قبل از تلاش بعدی
                 if attempt < 2:
                     await asyncio.sleep(2)
                     
@@ -108,26 +106,14 @@ class TonPriceBot:
 
     async def format_message(self, price):
         """فرمت پیام به صورت بولد - نمایش دقیقاً 3 رقم اعشار"""
-        # گرد کردن به 3 رقم اعشار
         price_rounded = price.quantize(Decimal('0.001'), rounding=ROUND_DOWN)
-        
-        # فرمت با دقیقاً 3 رقم اعشار
         price_str = f"{price_rounded:.3f}"
-        
         message = f"<b>{price_str} $</b>"
         return message
 
     async def send_price_update(self):
         """ارسال قیمت به کانال"""
         try:
-            # بررسی که در این دقیقه قبلاً ارسال نشده باشد
-            now = datetime.now(timezone.utc)
-            current_minute = (now.year, now.month, now.day, now.hour, now.minute)
-            
-            if self.last_sent_minute == current_minute:
-                logger.info("⏭️ در این دقیقه قبلاً ارسال شده، رد می‌شود")
-                return False
-            
             price = await self.get_ton_price()
             
             if price is None:
@@ -136,15 +122,11 @@ class TonPriceBot:
             
             message = await self.format_message(price)
             
-            # ارسال پیام به کانال
             await self.bot.send_message(
                 chat_id=self.channel,
                 text=message,
                 parse_mode=ParseMode.HTML
             )
-            
-            # ذخیره دقیقه ارسال
-            self.last_sent_minute = current_minute
             
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
             logger.info(f"✅ قیمت ارسال شد: {message} - {current_time}")
@@ -157,17 +139,6 @@ class TonPriceBot:
             logger.error(f"❌ خطای غیرمنتظره: {e}")
             return False
 
-    async def wait_until_next_minute(self):
-        """صبر تا شروع دقیقه بعدی بر اساس UTC"""
-        now = datetime.now(timezone.utc)
-        seconds_until_next_minute = 60 - now.second - (now.microsecond / 1000000)
-        
-        logger.info(f"⏳ صبر {seconds_until_next_minute:.1f} ثانیه...")
-        await asyncio.sleep(seconds_until_next_minute)
-        
-        # صبر 1 ثانیه اضافی برای اطمینان از شروع دقیقه جدید
-        await asyncio.sleep(1)
-
     async def run(self):
         """اجرای ربات"""
         logger.info("🚀 ربات شروع شد")
@@ -178,7 +149,13 @@ class TonPriceBot:
             logger.info(f"✅ ربات متصل: @{bot_info.username}")
             
             while True:
-                await self.wait_until_next_minute()
+                # صبر تا شروع دقیقه بعدی
+                now = datetime.now(timezone.utc)
+                seconds_to_wait = 60 - now.second
+                logger.info(f"⏳ صبر {seconds_to_wait} ثانیه تا دقیقه بعدی...")
+                await asyncio.sleep(seconds_to_wait)
+                
+                # ارسال قیمت
                 await self.send_price_update()
                 
         except KeyboardInterrupt:
@@ -186,7 +163,6 @@ class TonPriceBot:
         except Exception as e:
             logger.error(f"❌ خطای کلی: {e}")
             await asyncio.sleep(60)
-            await self.run()
         finally:
             if self.session:
                 await self.session.close()
