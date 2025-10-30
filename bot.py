@@ -2,6 +2,7 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
@@ -18,7 +19,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@tonpriceview')
 
-# API برای دریافت قیمت Toncoin
+# API برای دریافت قیمت Toncoin با دقت بالا
+KUCOIN_API = 'https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=TON-USDT'
+OKX_API = 'https://www.okx.com/api/v5/market/ticker?instId=TON-USDT'
 BINANCE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT'
 COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd'
 
@@ -31,36 +34,62 @@ class TonPriceBot:
         self.last_price = None
 
     async def get_ton_price(self):
-        """دریافت قیمت Toncoin با retry"""
+        """دریافت قیمت Toncoin با retry و دقت بالا"""
         # تلاش 3 بار
         for attempt in range(3):
             try:
                 if not self.session:
                     self.session = aiohttp.ClientSession()
                 
-                # تلاش CoinGecko
+                # اولویت 1: KuCoin (4 رقم اعشار)
                 try:
-                    async with self.session.get(COINGECKO_API, timeout=15) as response:
+                    async with self.session.get(KUCOIN_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
-                            price = float(data['the-open-network']['usd'])
-                            logger.info(f"✅ قیمت از CoinGecko: {price}")
-                            self.last_price = price
-                            return price
+                            if data.get('code') == '200000' and 'data' in data:
+                                price = Decimal(str(data['data']['price']))
+                                logger.info(f"✅ قیمت از KuCoin: ${price} (دقت: {len(str(price).split('.')[1])} رقم)")
+                                self.last_price = price
+                                return price
                 except Exception as e:
-                    logger.warning(f"CoinGecko خطا (تلاش {attempt + 1}): {e}")
+                    logger.warning(f"KuCoin خطا (تلاش {attempt + 1}): {e}")
                 
-                # تلاش Binance
+                # اولویت 2: OKX (3 رقم اعشار)
+                try:
+                    async with self.session.get(OKX_API, timeout=15) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            if data.get('code') == '0' and 'data' in data:
+                                price = Decimal(str(data['data'][0]['last']))
+                                logger.info(f"✅ قیمت از OKX: ${price} (دقت: {len(str(price).split('.')[1])} رقم)")
+                                self.last_price = price
+                                return price
+                except Exception as e:
+                    logger.warning(f"OKX خطا (تلاش {attempt + 1}): {e}")
+                
+                # اولویت 3: Binance (پشتیبان)
                 try:
                     async with self.session.get(BINANCE_API, timeout=15) as response:
                         if response.status == 200:
                             data = await response.json()
-                            price = float(data['price'])
-                            logger.info(f"✅ قیمت از Binance: {price}")
+                            price = Decimal(str(data['price']))
+                            logger.info(f"✅ قیمت از Binance: ${price} (دقت: {len(str(price).split('.')[1]) if '.' in str(price) else 0} رقم)")
                             self.last_price = price
                             return price
                 except Exception as e:
                     logger.warning(f"Binance خطا (تلاش {attempt + 1}): {e}")
+                
+                # اولویت 4: CoinGecko (پشتیبان)
+                try:
+                    async with self.session.get(COINGECKO_API, timeout=15) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            price = Decimal(str(data['the-open-network']['usd']))
+                            logger.info(f"✅ قیمت از CoinGecko: ${price} (دقت: {len(str(price).split('.')[1]) if '.' in str(price) else 0} رقم)")
+                            self.last_price = price
+                            return price
+                except Exception as e:
+                    logger.warning(f"CoinGecko خطا (تلاش {attempt + 1}): {e}")
                 
                 # صبر قبل از تلاش بعدی
                 if attempt < 2:
@@ -71,15 +100,20 @@ class TonPriceBot:
         
         # اگر همه تلاش‌ها ناموفق بود، از قیمت قبلی استفاده کن
         if self.last_price:
-            logger.warning(f"⚠️ استفاده از قیمت قبلی: {self.last_price}")
+            logger.warning(f"⚠️ استفاده از قیمت قبلی: ${self.last_price}")
             return self.last_price
         
         return None
 
     async def format_message(self, price):
-        """فرمت پیام به صورت بولد"""
-        formatted_price = f"{price:.3f}"
-        message = f"<b>{formatted_price} $</b>"
+        """فرمت پیام به صورت بولد - نمایش دقیقاً 3 رقم اعشار"""
+        # گرد کردن به 3 رقم اعشار
+        price_rounded = price.quantize(Decimal('0.001'), rounding=ROUND_DOWN)
+        
+        # فرمت با دقیقاً 3 رقم اعشار
+        price_str = f"{price_rounded:.3f}"
+        
+        message = f"<b>{price_str} $</b>"
         return message
 
     async def send_price_update(self):
@@ -101,7 +135,7 @@ class TonPriceBot:
             )
             
             current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
-            logger.info(f"✅ قیمت ارسال شد: {price:.3f} $ - {current_time}")
+            logger.info(f"✅ قیمت ارسال شد: {message} - {current_time}")
             return True
             
         except TelegramError as e:
