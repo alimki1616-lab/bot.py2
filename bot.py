@@ -1,136 +1,154 @@
 import os
-import logging
 import asyncio
+import logging
 from datetime import datetime, timezone
-import requests
 from telegram import Bot
 from telegram.constants import ParseMode
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+from telegram.error import TelegramError
+import aiohttp
 
-# تنظیمات لاگینگ
+# تنظیمات لاگ
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# تنظیمات بات
-BOT_TOKEN = os.environ.get('BOT_TOKEN', '7996544413:AAE_mTT90IMvF8NeI66KZL927obZmmY00MQ')
-CHANNEL_USERNAME = os.environ.get('CHANNEL_USERNAME', '@tonpriceview')
+# تنظیمات از محیط
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@tonpriceview')
 
-# ایجاد نمونه بات
-bot = Bot(token=BOT_TOKEN)
+# API برای دریافت قیمت Toncoin
+BINANCE_API = 'https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT'
+COINGECKO_API = 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd'
 
 
-def get_toncoin_price():
-    """دریافت قیمت Toncoin از Binance API"""
-    try:
-        # استفاده از Binance API برای دریافت قیمت TON/USDT
-        url = 'https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT'
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        
-        data = response.json()
-        price = float(data['price'])
-        
-        logger.info(f"قیمت Toncoin دریافت شد: ${price}")
-        return price
-        
-    except requests.exceptions.RequestException as e:
-        logger.error(f"خطا در دریافت قیمت از Binance: {e}")
-        
-        # تلاش با CoinGecko به عنوان backup
+class TonPriceBot:
+    def __init__(self, token, channel):
+        self.bot = Bot(token=token)
+        self.channel = channel
+        self.session = None
+
+    async def get_ton_price(self):
+        """دریافت قیمت Toncoin از CoinGecko API (سریع و قابل اعتماد)"""
         try:
-            url = 'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd'
-            response = requests.get(url, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            price = float(data['the-open-network']['usd'])
-            logger.info(f"قیمت Toncoin از CoinGecko دریافت شد: ${price}")
-            return price
-        except Exception as backup_error:
-            logger.error(f"خطا در دریافت قیمت از CoinGecko: {backup_error}")
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            # تلاش اول: CoinGecko (اصلی - رایگان و سریع)
+            async with self.session.get(COINGECKO_API, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    price = float(data['the-open-network']['usd'])
+                    logger.info(f"قیمت از CoinGecko دریافت شد: {price}")
+                    return price
+        except Exception as e:
+            logger.warning(f"خطا در دریافت از CoinGecko: {e}")
+        
+        # تلاش دوم: Binance (پشتیبان)
+        try:
+            if not self.session:
+                self.session = aiohttp.ClientSession()
+            
+            async with self.session.get(BINANCE_API, timeout=10) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    price = float(data['price'])
+                    logger.info(f"قیمت از Binance دریافت شد: {price}")
+                    return price
+        except Exception as e:
+            logger.error(f"خطا در دریافت از Binance: {e}")
             return None
-    except Exception as e:
-        logger.error(f"خطای غیرمنتظره: {e}")
-        return None
 
-
-async def send_price_to_channel():
-    """ارسال قیمت Toncoin به کانال"""
-    try:
-        # دریافت قیمت
-        price = get_toncoin_price()
-        
-        if price is None:
-            logger.error("قیمت دریافت نشد، پست ارسال نمی‌شود")
-            return
-        
-        # فرمت کردن قیمت با 3 رقم اعشار
+    async def format_message(self, price):
+        """فرمت پیام به صورت بولد"""
+        # فرمت: 2.265 $
         formatted_price = f"{price:.3f}"
-        
-        # ایجاد متن با فرمت bold
         message = f"<b>{formatted_price} $</b>"
+        return message
+
+    async def send_price_update(self):
+        """ارسال قیمت به کانال"""
+        try:
+            price = await self.get_ton_price()
+            
+            if price is None:
+                logger.error("نتوانستیم قیمت را دریافت کنیم")
+                return False
+            
+            message = await self.format_message(price)
+            
+            # ارسال پیام به کانال
+            await self.bot.send_message(
+                chat_id=self.channel,
+                text=message,
+                parse_mode=ParseMode.HTML
+            )
+            
+            current_time = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')
+            logger.info(f"✅ قیمت ارسال شد: {price:.3f} $ - زمان: {current_time}")
+            return True
+            
+        except TelegramError as e:
+            logger.error(f"❌ خطای تلگرام: {e}")
+            return False
+        except Exception as e:
+            logger.error(f"❌ خطای غیرمنتظره: {e}")
+            return False
+
+    async def wait_until_next_minute(self):
+        """صبر تا شروع دقیقه بعدی بر اساس UTC"""
+        now = datetime.now(timezone.utc)
+        # محاسبه ثانیه‌های باقیمانده تا دقیقه بعدی
+        seconds_until_next_minute = 60 - now.second - (now.microsecond / 1000000)
         
-        # دریافت زمان UTC
-        current_time = datetime.now(timezone.utc)
-        time_str = current_time.strftime('%Y-%m-%d %H:%M UTC')
+        logger.info(f"⏳ صبر برای {seconds_until_next_minute:.2f} ثانیه تا دقیقه بعدی...")
+        await asyncio.sleep(seconds_until_next_minute)
+
+    async def run(self):
+        """اجرای ربات"""
+        logger.info("🚀 ربات شروع به کار کرد")
+        logger.info(f"📢 کانال: {self.channel}")
         
-        # ارسال پیام به کانال
-        await bot.send_message(
-            chat_id=CHANNEL_USERNAME,
-            text=message,
-            parse_mode=ParseMode.HTML
-        )
-        
-        logger.info(f"قیمت به کانال ارسال شد: {formatted_price} $ در {time_str}")
-        
-    except Exception as e:
-        logger.error(f"خطا در ارسال پیام به کانال: {e}")
+        try:
+            # تست ارتباط با تلگرام
+            bot_info = await self.bot.get_me()
+            logger.info(f"✅ ربات متصل شد: @{bot_info.username}")
+            
+            # همگام‌سازی با شروع دقیقه
+            await self.wait_until_next_minute()
+            
+            # حلقه اصلی
+            while True:
+                # ارسال قیمت
+                await self.send_price_update()
+                
+                # صبر برای دقیقه بعدی
+                await asyncio.sleep(60)
+                
+        except KeyboardInterrupt:
+            logger.info("⛔ ربات متوقف شد")
+        except Exception as e:
+            logger.error(f"❌ خطای کلی: {e}")
+        finally:
+            if self.session:
+                await self.session.close()
+            logger.info("👋 ربات بسته شد")
 
 
 async def main():
-    """تابع اصلی برای اجرای بات"""
-    try:
-        # بررسی اتصال بات
-        bot_info = await bot.get_me()
-        logger.info(f"بات با موفقیت راه‌اندازی شد: @{bot_info.username}")
-        
-        # ارسال یک پیام تست
-        logger.info("ارسال اولین قیمت...")
-        await send_price_to_channel()
-        
-        # ایجاد scheduler
-        scheduler = AsyncIOScheduler(timezone='UTC')
-        
-        # اضافه کردن job برای اجرای هر دقیقه
-        # با استفاده از CronTrigger برای همگام‌سازی دقیق با دقیقه‌های UTC
-        scheduler.add_job(
-            send_price_to_channel,
-            CronTrigger(second=0, timezone='UTC'),  # اجرا در ثانیه 0 هر دقیقه
-            id='price_posting',
-            name='Post Toncoin Price',
-            replace_existing=True
-        )
-        
-        scheduler.start()
-        logger.info("Scheduler راه‌اندازی شد - بات هر دقیقه قیمت را پست می‌کند")
-        
-        # نگه داشتن بات در حالت اجرا
-        while True:
-            await asyncio.sleep(60)
-            
-    except Exception as e:
-        logger.error(f"خطا در اجرای بات: {e}")
-        raise
+    """تابع اصلی"""
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN تنظیم نشده است!")
+        logger.error("لطفاً متغیر محیطی BOT_TOKEN را تنظیم کنید")
+        return
+    
+    bot = TonPriceBot(BOT_TOKEN, CHANNEL_USERNAME)
+    await bot.run()
 
 
 if __name__ == '__main__':
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("بات متوقف شد")
-    except Exception as e:
-        logger.error(f"خطای کلی: {e}")
-```
+        logger.info("⛔ برنامه متوقف شد")
