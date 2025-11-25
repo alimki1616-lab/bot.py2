@@ -16,7 +16,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # تنظیمات از محیط
-BOT_TOKEN = os.getenv('BOT_TOKEN')
+BOT_TOKEN = os.getenv('8319365970:AAE9vdXVQ11arGG7DK_3N11VfdBkBO1FeFQ')
 CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@tonpricepro')
 
 # API برای دریافت قیمت Toncoin با دقت بالا
