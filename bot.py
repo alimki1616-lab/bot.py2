@@ -16,8 +16,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # تنظیمات از محیط
-BOT_TOKEN = os.getenv('BOT_TOKEN', '8319365970:AAE9vdXVQ11arGG7DK_3N11VfdBkBO1FeFQ')
-CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@tonpricepro')
+BOT_TOKEN = os.getenv('BOT_TOKEN', '8531544751:AAGZdTCSJxnKIElY-gQshzYa2D9pkqT3taQ')
+CHANNEL_USERNAME = os.getenv('CHANNEL_USERNAME', '@tonpricew')
+
+# بازه زمانی ارسال پست (به دقیقه)
+POST_INTERVAL_MINUTES = 5
 
 # API برای دریافت قیمت Toncoin با دقت بالا
 KUCOIN_API = 'https://api.kucoin.com/api/v1/market/orderbook/level1?symbol=TON-USDT'
@@ -140,19 +143,34 @@ class TonPriceBot:
             return False
 
     async def run(self):
-        """اجرای ربات"""
+        """اجرای ربات - ارسال هر 5 دقیقه"""
         logger.info("🚀 ربات شروع شد")
         logger.info(f"📢 کانال: {self.channel}")
+        logger.info(f"⏰ بازه زمانی ارسال: هر {POST_INTERVAL_MINUTES} دقیقه")
         
         try:
             bot_info = await self.bot.get_me()
             logger.info(f"✅ ربات متصل: @{bot_info.username}")
             
             while True:
-                # صبر تا شروع دقیقه بعدی
+                # محاسبه زمان باقی‌مانده تا بازه زمانی بعدی (هر 5 دقیقه)
                 now = datetime.now(timezone.utc)
-                seconds_to_wait = 60 - now.second
-                logger.info(f"⏳ صبر {seconds_to_wait} ثانیه تا دقیقه بعدی...")
+                
+                # محاسبه دقیقه‌ای که باید پست بگذاریم (0, 5, 10, 15, ...)
+                current_minute = now.minute
+                next_post_minute = ((current_minute // POST_INTERVAL_MINUTES) + 1) * POST_INTERVAL_MINUTES
+                
+                if next_post_minute >= 60:
+                    next_post_minute = 0
+                    minutes_to_wait = (60 - current_minute) + next_post_minute
+                else:
+                    minutes_to_wait = next_post_minute - current_minute
+                
+                seconds_to_wait = (minutes_to_wait * 60) - now.second
+                
+                logger.info(f"⏳ صبر {minutes_to_wait} دقیقه و {60 - now.second} ثانیه تا ارسال بعدی...")
+                logger.info(f"⏰ دقیقه فعلی: {current_minute}, دقیقه بعدی: {next_post_minute}")
+                
                 await asyncio.sleep(seconds_to_wait)
                 
                 # ارسال قیمت
